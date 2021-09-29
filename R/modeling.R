@@ -1229,7 +1229,7 @@ TF_Targetgene_interactions_infer <- function (Object, viper_scores_df,TGuse=NULL
 #' @return
 #' @export
 #'
- Receptor-TF_interactions_specific <- function (object,S=S, R_TFnet=R_TFnet) 
+ Receptor_TF_interactions_specific <- function (object,S=S, R_TFnet=R_TFnet) 
 {
   complexsubunits <- dplyr::select(object@DB[["complex"]][match(object@LR[["LRsig"]][["receptor"]], rownames(object@DB[["complex"]]), nomatch=0),], starts_with("subunit"))
   complexsubunitsV <- unlist(complexsubunits)
@@ -1258,11 +1258,11 @@ TF_Targetgene_interactions_infer <- function (Object, viper_scores_df,TGuse=NULL
 #extract cell type-specific Ligand-Receptor interactions
 #'
 #' @param Ligand_Receptors_interactions is the form of dataframe
-#' @param R_TF is the form of dataframe from Receptor-TF_interactions_specific
+#' @param R_TF is the form of dataframe from Receptor_TF_interactions_specific
 #' @return
 #' @export
 #'
-Ligand-Receptor_interactions_specific <- function (Ligand_Receptors_interactions,R_TF=NULL) 
+Ligand_Receptor_interactions_specific <- function (Ligand_Receptors_interactions,R_TF=NULL) 
 {
   Receptor<-strsplit(Ligand_Receptors_interactions$receptor,"_")
   L_R<-list()
