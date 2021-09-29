@@ -982,4 +982,300 @@ identifyEnrichedInteractions <- function(object, from, to, bidirection = FALSE, 
   }
   return(pairLR.use0)
 }
+                    
+                    
+                    
+#Receptor-TF interactions from OmniPath public database
+## interactions from the original OmniPath human interactions，pathwayextra dataset，kinaseextra dataset， We query and store the interactions into a dataframe
+#'
+#' @param resources1，resources2，resources3 are the sources of OmniPath public database 
+#' @param organism represents different species
+#'
+#' @return
+#' @export
+#'
+Receptor_TF_interactions_public<-function (resources1 = NULL, resources2 = NULL, resources3 = NULL, organism = 9606, 
+          fields = NULL, default_fields = TRUE, references_by_resource1 = TRUE, references_by_resource2 = TRUE,
+          references_by_resource3 = TRUE,exclude = NULL, ...) 
+{
+  interactions1 <-import_omnipath(query_type = "interactions", resources = resources1, 
+                                  organism = organism, datasets = "omnipath", fields = fields, 
+                                  default_fields = default_fields, references_by_resource = references_by_resource1, 
+                                  exclude = exclude, ...)
+  interactions2 <-import_omnipath(query_type = "interactions", resources = resources2, 
+                                  organism = organism, datasets = "pathwayextra", fields = fields, 
+                                  default_fields = default_fields, references_by_resource = references_by_resource2, 
+                                  exclude = exclude, ...)
+  interactions3 <-import_omnipath(query_type = "interactions", resources = resources3, 
+                                  organism = organism, datasets = "kinaseextra", fields = fields, 
+                                  default_fields = default_fields, references_by_resource = references_by_resource3, 
+                                  exclude = exclude, ...)
+  result<-rbind(interactions1,interactions2,interactions3)
+  return(result)
+}
+                    
+                    
+                    
+#TF-Target gene interactions from OmniPath public database
+#'
+#' @param resources1，resources2，resources3 are the sources of OmniPath public database 
+#' @param organism represents different species
+#' @param dorothea_levels are Confidence level
+#' @return
+#' @export
+#'
+ TF_Targetgene_interactions_public <- function (resources = NULL, organism = 9606, dorothea_levels = c("A", 
+                        "B","C"), fields = NULL, default_fields = TRUE, references_by_resource = TRUE, 
+          exclude = NULL, ...) 
+{
+  result <- import_omnipath(query_type = "interactions", resources = resources, 
+                            organism = organism, dorothea_levels = dorothea_levels, 
+                            datasets = "dorothea", fields = fields, default_fields = default_fields, 
+                            references_by_resource = references_by_resource, exclude = exclude, 
+                            ...)
+  return(result)
+}
+                    
+                    
+ 
+                    
+#get TF activity expression from differential expression analysis 
+#'
+#' @param Object Seurat object
+#' @param logfc.threshold of the logfc for determining significant genes
+#' @param min.pctis the minimum percentage for determining cells
+#' @param resolution is the resolution during clustering
+#' @param celltypeidentity: Assigning cell type identity to clusters
+#' @return
+#' @export
+#'
+ viper_scores_df <- function (Object,only.pos = TRUE,min.pct = 0.25, 
+         logfc.threshold = 0.25, verbose = FALSE,resolution=resolution,
+         celltypeidentity=celltypeidentity) 
+{
+  dorothea_regulon_human <- get(data("dorothea_hs", package = "dorothea"))
+  ## We obtain the regulons based on interactions with confidence level A, B and C
+  regulon <- dorothea_regulon_human %>%dplyr::filter(confidence %in% c("A","B","C"))
+  ## We compute Viper Scores 
+  Object<- run_viper(Object, regulon,options = list(method = "scale", minsize = 4,eset.filter = FALSE, cores = 1, 
+                                                  verbose = FALSE))
+  DefaultAssay(Object) <- "dorothea"
+  Object <- ScaleData(Object)
+  Object <- RunPCA(Object, features = rownames(Object), verbose = FALSE)
+  Object <- FindNeighbors(Object, dims = 1:30, verbose = FALSE)
+  Object <- FindClusters(Object, resolution = resolution, verbose = FALSE)
+  Object <- RunUMAP(Object, dims = 1:30, umap.method = "uwot", metric = "cosine")
+  Object.markers <- FindAllMarkers(Object, only.pos = TRUE, min.pct = 0.25, 
+                                  logfc.threshold = 0.25, verbose = FALSE)
+  ## Assigning cell type identity to clusters
+  new.cluster.ids <- celltypeidentity
+  names(new.cluster.ids) <- levels(Object)
+  Object <- RenameIdents(Object, new.cluster.ids)
+  ## We transform Viper scores, scaled by seurat, into a data frame to better 
+  ## handling the results
+  viper_scores_df <- GetAssayData(Object, slot = "scale.data",assay = "dorothea") %>%
+    data.frame(check.names = F) %>%t()
+  result<-viper_scores_df+abs(min(viper_scores_df))
+  return(result)
+}                   
+ 
+                    
+                    
+                    
+                    
+#infer TF-Target gene interactions by ADMM
+#'
+#' @param Object Seurat object
+#' @param viper_scores_df is the TF activity expression
+#' @param TGuse are the total target genes differentially expressed in different clusters
+#' @param TFuse are the total target genes TFs differentially expressed in different clusters
+#' @param signalingnetwork is the form of dataframe from TF_Targetgene_interactions_public
+#' @param lambda1/lambda2 are regularization parameters
+#' @param maxiter is the maximum number of iterations
+#' @return
+#' @export
+#'
+TF_Targetgene_interactions_infer <- function (Object, viper_scores_df,TGuse=NULL,TFuse=NULL, 
+          signalingnetwork = signalingnetwork, lambda1=50,lambda2=10,rho=0.5,
+          abstol = 0.0001,reltol = 0.01,maxiter = 10000) 
+{
+  TFactexp<-viper_scores_df[,TFuse]
+  mat<-cbind(as.matrix(t(Object@assays$RNA@data[TGuse,])),TFactexp)
+  A<-as.matrix(Object@assays$RNA@data[TGuse,])
+  B<-as.matrix(t(TFactexp))
+  N<-matrix(runif(length(TFuse)*length(TGuse),min=1,max=1),length(TGuse),length(TFuse))
+  for (i in 1:length(TFuse)) {
+    for (j in 1:length(TGuse)) {
+      for (k in 1:dim(signalingnetwork)[2]) {
+        if(TFmarkers$gene[i]%in%signalingnetwork$source_genesymbol[k]&&TGmarkers$gene[j]%in%signalingnetwork$target_genesymbol[k]){
+          N[i,j]<-0
+        }
+      }
+    }
+  }
+  colnames(N)<-TFuse
+  rownames(N)<-TGuse
+  x<-matrix(runif(length(TFuse)*length(TGuse),min=0,max=1),length(TGuse),length(TFuse))
+  z<-matrix(runif(length(TFuse)*length(TGuse),min=0,max=1),length(TGuse),length(TFuse))
+  y<-matrix(runif(length(TFuse)*length(TGuse),min=0,max=1),length(TGuse),length(TFuse))
+  I<-diag(length(TFuse))
+  lambda1=lambda1
+  lambda2=lambda2
+  rho = rho 
+  abstol =abstol
+  reltol = reltol
+  maxiter = maxiter
+  r_norm <- matrix(nrow=maxiter,ncol=1)
+  s_norm <- matrix(nrow=maxiter,ncol=1)
+  eps_pri <- matrix(nrow=maxiter,ncol=1)
+  eps_dual <- matrix(nrow=maxiter,ncol=1)
+  cost<-matrix(nrow=maxiter,ncol=1)
+  for(k in 1:maxiter){
+    #update x
+    x<-(A%*%t(B)+(rho*(z-y)))%*%(solve(B%*%t(B)+rho*I))
+    #update z
+    bz<-z
+    for (i in 1:length(TGuse)) {
+      for (j in 1:length(TFuse)) {
+        z[i,j]<-(sign (y[i,j]+x[i,j])*max(abs(y[i,j]+x[i,j])-lambda2/rho,0))/(1+(lambda1*(N[i,j])^2)/rho)
+      }
+    }
+    #update y
+    y<-y+rho*(x-z)
+    #residual
+    cost[k]<-1/2*(norm((A-x%*%B),"f"))^2+1/2*lambda1*(norm(as.matrix(x*N),"f"))^2+lambda2*sum(abs(x))
+    r_norm[k] <- norm(x-z, "f")
+    s_norm[k] <- norm(-rho*(z-bz), "f")
+    eps_pri[k] <- sqrt(length(TGuse))*abstol + reltol*max(norm(x,"f"), norm(-z,"f"));
+    eps_dual[k] <- sqrt(length(TFuse))*abstol + reltol*norm(y,"f")
+    if((r_norm[k]<eps_pri[k])&(s_norm[k]<eps_dual[k])){
+      break
+    }
+  }
+  k
+  cor = propr::perb(mat, select = colnames(mat))@matrix
+  head(cor)
+  dim(cor)
+  cor<-cor[1:length(TGuse),(length(TGuse)+1):(length(TFuse)+length(TGuse))]
+  for(i in 1:length(TGuse)){
+    for(j in 1:length(TFuse)){
+      if(rownames(cor)[i]==colnames(cor)[j]){
+        cor[i,j]<-0
+      }
+    }
+  }
+  x<-x*0.7+cor*0.3
+  #globalnetwork(TF-target gene)
+  interaction<-matrix(nrow=(length(TGuse)*length(TFuse)),ncol=1)
+  k<-1
+  for (i in 1:length(TGuse)) {
+    for (j in 1:length(TFuse)) {
+      interaction[k]<-x[i,j]
+      k<-k+1
+    }
+  }
+  source<-rep(TFuse,length(TGuse))
+  target<-rep(TGuse[1],length(TFuse))
+  for(i in 2:length(TGuse)){
+    target<-c(target,rep(TGuse[i],length(TFuse)))
+  }
+  interaction<-as.vector(interaction)
+  result<-cbind(source,target,interaction)
+  return(result)
+}
 
+                    
+                    
+                    
+                    
+#extract cell type-specific TF-target gene network
+#'
+#' @param globalnetwork is the form of dataframe from TF_Targetgene_interactions_infer
+#' @param TF are the target genes differentially expressed in different clusters 
+#' @param TG are target genes differentially expressed in different clusters
+#' @param clusters are the different cell groups
+#' @return
+#' @export
+#'
+ TF_Targetgene_interactions_specific <- function (globalnetwork, TF=NULL,TG=NULL,cluster=NULL) 
+{
+  S<-vector("list",length(cluster))
+  for(i in length(cluster)){
+    index<-which(globalnetwork$source%in%TF[[i]]==TRUE)
+    S[[i]]<-cbind(as.data.frame(globalnetwork$source[index]),as.data.frame(globalnetwork$target[index]),as.data.frame(globalnetwork$interaction[index]))
+    colnames(S[[i]])<-c("source","target","interaction")
+    print(S[[i]])
+    index<-which(S[[i]]$target%in%TG[[i]]==TRUE)
+    S[[i]]<-cbind(as.data.frame(S[[i]]$source[index]),as.data.frame(S[[i]]$target[index]),as.data.frame(S[[i]]$interaction[index]))
+    colnames(S[[i]])<-c("source","target","interaction")
+    print(S[[i]])
+    index<-order(S[[i]]$interaction,decreasing=TRUE)[1:25]
+    S[[i]]<-cbind(as.data.frame(S[[i]]$source[index]),as.data.frame(S[[i]]$target[index]),as.data.frame(S[[i]]$interaction[index]))
+    colnames(S[[i]])<-c("source","target","interaction")
+    print(S[[i]])
+    
+  }
+  result<-S[[i]]
+  return(result)
+}
+                   
+                    
+                    
+#extract cell type-specific Receptor-TF interactions                    
+#'
+#' @param Object Seurat object
+#' @param S is the form of list containing Receptor-TF interactions in different clusters
+#' @param R_TFnet is the form of dataframe from Receptor_TF_interactions_public
+#' @return
+#' @export
+#'
+ Receptor-TF_interactions_specific <- function (object,S=S, R_TFnet=R_TFnet) 
+{
+  complexsubunits <- dplyr::select(object@DB[["complex"]][match(object@LR[["LRsig"]][["receptor"]], rownames(object@DB[["complex"]]), nomatch=0),], starts_with("subunit"))
+  complexsubunitsV <- unlist(complexsubunits)
+  complexsubunitsV <- unique(complexsubunitsV[complexsubunitsV != ""])
+  t<-1
+  R_TF<-list()
+  for (i in 1:length(complexsubunitsV)) {
+    for (j in 1:length(S[[2]]$source)) {
+      for (k in 1:dim(R_TFnet)[1]) {
+        if(complexsubunitsV$x[i]%in%R_TFnet$source_genesymbol[k]&S[[2]]$source[j]%in%R_TFnet$target_genesymbol[k]){
+          R_TF[[t]]<-paste(complexsubunitsV[i],S[[2]]$source[j])
+          print(R_TF[[t]])
+          t<-t+1
+        }
+      }
+    }
+  }
+  result<-R_TF[[t]]
+  return(result)
+}
+                    
+                    
+                    
+                    
+                    
+#extract cell type-specific Ligand-Receptor interactions
+#'
+#' @param Ligand_Receptors_interactions is the form of dataframe
+#' @param R_TF is the form of dataframe from Receptor-TF_interactions_specific
+#' @return
+#' @export
+#'
+Ligand-Receptor_interactions_specific <- function (Ligand_Receptors_interactions,R_TF=NULL) 
+{
+  Receptor<-strsplit(Ligand_Receptors_interactions$receptor,"_")
+  L_R<-list()
+  n<-1
+  for (i in 1:length(R_TF)) {
+    for(j in 1:length(Receptor)){
+      R_TF[[i]]<-strsplit(R_TF[[i]]," ")
+      if(R_TF[[i]][1]%in%Receptor[j]){
+        L_R[[i]]<-paste((R_TF[[i]][1],Ligand_Receptors_interactions$receptor[i])
+        n<-n+1
+      }
+    }
+  }
+  result<-L_R[[i]]
+  return(result)
+}
